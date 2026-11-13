@@ -22,7 +22,7 @@ from .config import Config, ConfigError, describe_proxy, load_config, parse_env_
 from .formatting import Identity
 from .logging_setup import setup_logging
 from .rocket.realtime import RocketRealtime
-from .rocket.rest import RocketChatError, RocketChatRest
+from .rocket.rest import RocketChatAuthError, RocketChatError, RocketChatRest
 from .store import Store
 from .telegram_bot import (
     TelegramSender,
@@ -108,9 +108,15 @@ async def check(config: Config) -> int:
     ok = True
     rest = RocketChatRest(config.rocket_url, config.rocket_user_id, config.rocket_token)
     try:
-        info = await rest.server_info()
-        print(f"✔ Rocket.Chat server reachable at {config.rocket_url} "
-              f"(version {info.get('info', {}).get('version') or info.get('version', '?')})")
+        try:
+            info = await rest.server_info()
+            version = info.get("version") or info.get("info", {}).get("version") or "?"
+            print(f"✔ Rocket.Chat server reachable at {config.rocket_url} (version {version})")
+        except RocketChatAuthError:
+            raise
+        except RocketChatError as exc:
+            # Not fatal: some servers hide this endpoint. The token check below decides.
+            print(f"• Rocket.Chat server info not available ({exc}); checking the token anyway")
         me = await verify_rocket(config, rest)
         print(f"✔ Rocket.Chat token valid, logged in as @{me.username}")
         rooms = await rest.list_rooms()

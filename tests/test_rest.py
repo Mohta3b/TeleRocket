@@ -107,3 +107,10 @@ async def test_resolve_direct_opens_dm(rest):
     import json
 
     assert json.loads(route.calls.last.request.content) == {"username": "bob"}
+
+
+@respx.mock
+async def test_server_info_uses_api_info_not_v1(rest):
+    route = respx.get(BASE + "/api/info").respond(json={"version": "8.7", "success": True})
+    assert (await rest.server_info())["version"] == "8.7"
+    assert route.called

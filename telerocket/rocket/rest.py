@@ -54,6 +54,7 @@ class RocketChatRest:
         timeout: float = 20.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
+        self._root = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
             base_url=f"{base_url.rstrip('/')}/api/v1/",
             headers={"X-User-Id": user_id, "X-Auth-Token": token},
@@ -88,7 +89,8 @@ class RocketChatRest:
         return await self._call("GET", "me")
 
     async def server_info(self) -> dict[str, Any]:
-        return await self._call("GET", "info")
+        # Public endpoint that lives at /api/info (not under /api/v1).
+        return await self._call("GET", f"{self._root}/api/info")
 
     async def send_to_room(self, rid: str, text: str, tmid: str | None = None) -> str:
         """Send a message to a room id (optionally inside a thread). Returns message id."""
