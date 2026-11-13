@@ -24,7 +24,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/.venv/bin/telerocket run
+ExecStart="$PROJECT_DIR/.venv/bin/telerocket" run
 Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=15

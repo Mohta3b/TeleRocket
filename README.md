@@ -1,7 +1,8 @@
 # TeleRocket
 
 A personal bridge between your Rocket.Chat account (on your company's own
-server) and your Telegram, through a Telegram bot that runs on your laptop.
+server) and your Telegram, through a Telegram bot that runs on your own computer.
+No public server or open ports needed.
 
 - Rocket.Chat messages you receive show up in Telegram.
 - Reply to one of them in Telegram and the answer goes to the same Rocket.Chat
@@ -16,7 +17,10 @@ See [PLAN.md](PLAN.md) for the design and the security choices.
 
 ## Requirements
 
-- Linux/macOS with Python 3.10+ and [`uv`](https://docs.astral.sh/uv/) (already installed here).
+- Python 3.10+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
+  (`curl -LsSf https://astral.sh/uv/install.sh | sh`, or your package manager).
+  Linux or macOS; the background service option needs Linux with systemd,
+  the Docker option works anywhere Docker runs.
 - A Rocket.Chat account on your company server, with permission to create
   *Personal Access Tokens* (most servers allow it; if not, ask the admin).
 - A Telegram account.
@@ -24,9 +28,11 @@ See [PLAN.md](PLAN.md) for the design and the security choices.
 Install the dependencies once:
 
 ```bash
-cd ~/Applications/TeleRocket
+cd TeleRocket        # the folder you cloned or copied, wherever it is
 uv sync
 ```
+
+All commands below are run from inside that folder.
 
 ## 1. Create your local config
 
@@ -71,7 +77,7 @@ through a proxy (even if `HTTP_PROXY`/`HTTPS_PROXY` are set in your shell).
 
 The bridge can reach Telegram through a proxy while Rocket.Chat stays direct.
 Point `TELEGRAM_PROXY_URL` in `.env` at the local proxy your VPN or proxy
-client provides (v2rayN/v2rayA, Xray, Clash, Shadowsocks, Psiphon, Tor, and so on).
+client provides (Hiddify, v2rayN/v2rayA, Xray, Clash, Shadowsocks, Psiphon, Tor, and so on).
 Look in that app's settings for the local SOCKS or HTTP port:
 
 ```ini
@@ -203,14 +209,14 @@ uv run pytest
 The tests use fakes for both services (including a fake Rocket.Chat websocket
 server), so they need no credentials or network.
 
-## Run it in the background (start with the laptop)
+## Run it in the background (start with your computer)
 
 Pick **one** of the two options below. Run only one copy of the bridge at a
 time (terminal, service or container): two copies polling the same bot make
 Telegram return "Conflict" errors. So stop `uv run telerocket` in your terminal
 before installing either option.
 
-Both options wait patiently at boot: if the network or your proxy (Hiddify)
+Both options wait patiently at boot: if the network or your proxy app
 isn't up yet, the bridge keeps retrying (every 5s, slowing down to every 2 min)
 instead of giving up. If your credentials are rejected it stops and logs why;
 fix `.env` and restart.
@@ -249,14 +255,16 @@ docker compose up -d --build
 - Logs: `docker compose logs -f` · Stop: `docker compose down` ·
   After editing `.env`: `docker compose up -d` · After updating the code:
   `docker compose up -d --build`.
-- It uses host networking, so it reaches Hiddify on `127.0.0.1:12334` and
-  Rocket.Chat directly, exactly like the host. It also reads the host's
-  `/etc/hosts`, which matters if company addresses are defined there.
+- It uses host networking, so it reaches Rocket.Chat and any proxy on the
+  host's `127.0.0.1` (your `TELEGRAM_PROXY_URL`) exactly like the host does.
+  It also reads the host's `/etc/hosts` and DNS settings, which matters if
+  company addresses are defined there. Host networking is meant for Linux;
+  on macOS use the service-free `uv run telerocket` or adjust the compose file.
 - Secrets stay out of the image: `.env` is excluded from the build and passed
   in only when the container starts. The container runs as a non-root user
   with a read-only filesystem; its database lives in the `telerocket-data` volume.
 - If the build can't download Python packages, export your proxy first,
-  e.g. `export HTTPS_PROXY=http://127.0.0.1:12334`, then build again.
+  e.g. `export HTTPS_PROXY=http://127.0.0.1:8080` (your proxy's HTTP port), then build again.
   The proxy is used only during the build and is not stored in the image.
 
 ## Security notes

@@ -58,7 +58,7 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
 async def retry_until_ready(what, func, stop, *, first_delay=5.0, max_delay=120.0):
     """Run ``func`` until it succeeds, retrying network errors with backoff.
 
-    At boot the network or the proxy (e.g. Hiddify) may not be up yet, so
+    At boot the network or the local proxy app may not be up yet, so
     connection problems are retried forever instead of exiting. Rejected
     credentials are not retried. Returns None if stopped while waiting.
     """

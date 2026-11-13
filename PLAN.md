@@ -2,7 +2,7 @@
 
 A personal bridge between one Rocket.Chat account (on a self-hosted company
 server) and one Telegram account, through a Telegram bot that runs locally on
-the owner's laptop.
+the owner's own computer (no public server needed).
 
 ## Goals
 
@@ -24,9 +24,9 @@ the owner's laptop.
 
 | Concern | Choice | Why |
 | --- | --- | --- |
-| Language | Python 3.10+ | Already on the laptop, good async libraries. |
+| Language | Python 3.10+ | Widely available, good async libraries. |
 | Env / deps | `uv` + `pyproject.toml` | Reproducible, lock file, `uv` is installed. |
-| Telegram | `python-telegram-bot` v21 (long polling) | Mature, async; polling needs no public URL, which fits a laptop. |
+| Telegram | `python-telegram-bot` v21 (long polling) | Mature, async; polling needs no public URL, which fits a personal computer. |
 | Rocket.Chat realtime | Rocket.Chat DDP websocket (`websockets`) | Push delivery of new messages, no polling delay. |
 | Rocket.Chat REST | `httpx` | Sending messages, listing chats, checking the login. |
 | Local state | SQLite (stdlib) | Maps Telegram message ids to Rocket.Chat room/thread ids so replies work after restarts. Stores ids only, never message text. |

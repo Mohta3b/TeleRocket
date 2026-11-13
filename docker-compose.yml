@@ -18,7 +18,7 @@ services:
     container_name: telerocket
     restart: unless-stopped
     # Host networking: the container reaches your local proxy on 127.0.0.1
-    # (e.g. Hiddify on 127.0.0.1:12334) and Rocket.Chat directly, like the host does.
+    # (whatever TELEGRAM_PROXY_URL points at) and Rocket.Chat directly, like the host does.
     network_mode: host
     env_file: .env
     environment:
