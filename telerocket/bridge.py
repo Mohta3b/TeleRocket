@@ -130,7 +130,12 @@ class Bridge:
                 "I don't know which Rocket.Chat chat that message belongs to. "
                 "Reply to a forwarded message, or use /to or /send."
             )
-        return await self._send(target.rid, text, target.tmid, target.room_label)
+        result = await self._send(target.rid, text, target.tmid, target.room_label)
+        if result.startswith("✅"):
+            # Keep talking to the same person without having to reply each time.
+            self.store.set("active_rid", target.rid)
+            self.store.set("active_label", target.room_label)
+        return result
 
     async def send_text(self, text: str) -> str:
         rid = self.store.get("active_rid")

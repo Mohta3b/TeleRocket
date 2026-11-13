@@ -69,6 +69,9 @@ async def test_forward_and_reply_roundtrip(parts):
     result = await bridge.reply(tg_id, "hi back")
     assert result == "✅ Sent to @sara"
     assert rest.sent == [("r-dm", "hi back", None)]
+    # the replied-to chat becomes the active chat
+    assert await bridge.send_text("and more") == "✅ Sent to @sara"
+    assert rest.sent[-1] == ("r-dm", "and more", None)
 
 
 async def test_reply_goes_to_thread(parts):
