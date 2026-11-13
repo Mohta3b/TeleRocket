@@ -142,6 +142,25 @@ In `.env`:
 Restart the bridge after changing `.env` (`scripts/service.sh restart`, or
 `docker compose up -d` for the container).
 
+### Changing these settings from Telegram
+
+You don't have to edit `.env` for day-to-day changes. In the bot:
+
+| Command | What it does |
+| --- | --- |
+| `/settings` | Menu with buttons: forwarding scope, confirmation on/off, ignore / un-ignore chats, reset |
+| `/scope all` · `/scope dm_mentions` | What gets forwarded |
+| `/confirm on` · `/confirm off` | Ask before sending |
+| `/ignore #channel` · `/ignore @user` | Stop forwarding a chat (no argument: pick from your recent chats) |
+| `/unignore #channel` · `/unignore @user` | Forward it again (no argument: pick from the ignored list) |
+
+Changes apply immediately (no restart) and are saved, so they survive restarts.
+The `.env` values are the defaults: a setting follows `.env` until you change it
+in Telegram, and **↩️ Reset to .env** in `/settings` goes back to `.env`.
+Chats ignored from Telegram are remembered by their room id, so renaming a
+channel doesn't un-ignore it. Settings are stored in the local database next to
+the message ids (no message text).
+
 ## 5. Check the setup
 
 ```bash
@@ -192,9 +211,13 @@ Ask a colleague to help (or use a second Rocket.Chat account), with the bridge r
 7. **Confirmation (if `CONFIRM_BEFORE_SEND=true`):** send or reply to
    something. A preview appears instead of sending; tap **✖️ Cancel** and check
    nothing arrived in Rocket.Chat, then try again and tap **✅ Send**.
-8. **Status:** `/status` shows the connection, forwarding mode and active chat.
+8. **Settings:** send `/settings`, switch to **All messages**, and ask the
+   colleague to post in a channel without mentioning you: it arrives. Then use
+   **🔕 Ignore a chat** on that channel and have them post again: it doesn't.
+   Restart the bridge and check `/settings` still shows your choices.
+9. **Status:** `/status` shows the connection, forwarding mode and active chat.
    `/pause` and `/resume` turn forwarding off and on.
-9. **Reconnect:** turn Wi-Fi off for a couple of minutes. You get a "Lost
+10. **Reconnect:** turn Wi-Fi off for a couple of minutes. You get a "Lost
    connection" notice after about 90 seconds offline, and "Reconnected" when it
    is back. Messages sent while the bridge was offline are not forwarded later.
 

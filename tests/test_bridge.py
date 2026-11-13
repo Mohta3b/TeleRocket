@@ -219,3 +219,85 @@ async def test_resolve_errors_are_messages(parts):
 
 async def test_status_shows_confirmation_setting(parts):
     assert "Confirm before sending: off" in parts[0].status()
+
+
+# --- settings changed from Telegram -----------------------------------------
+
+def chan(mid="c1", room="general", rid="r-gen", **kw):
+    m = {"_id": mid, "rid": rid, "msg": "hey", "u": {"_id": "u2", "username": "sara"}}
+    m.update(kw)
+    return m, {"roomType": "c", "roomName": room}
+
+
+async def test_scope_change_applies_immediately_and_persists(parts, config):
+    bridge, out, rest, store = parts
+    await bridge.on_rocket_message(*chan("c1"))
+    assert out.sent == []  # default dm_mentions
+    assert "All messages" in bridge.set_scope("all")
+    await bridge.on_rocket_message(*chan("c2"))
+    assert len(out.sent) == 1
+    # a new Bridge over the same store (i.e. after restart) keeps it
+    assert Bridge(config, rest, store, out, ME).forward_scope == "all"
+    assert "⚠️" in bridge.set_scope("everything")
+    assert bridge.set_scope("dm") == "Forwarding: DMs + mentions"
+
+
+async def test_confirm_toggle_overrides_env(parts):
+    bridge, _, _, _ = parts
+    assert bridge.confirm_before_send is False  # from .env default
+    bridge.set_confirm(True)
+    assert bridge.confirm_before_send is True
+    bridge.set_confirm(False)
+    assert bridge.confirm_before_send is False
+
+
+async def test_ignore_by_name_dm_and_unignore(parts):
+    bridge, out, _, _ = parts
+    bridge.set_scope("all")
+    assert "Ignoring #general" in await bridge.ignore("#general")
+    assert "already" in await bridge.ignore("#general")
+    await bridge.on_rocket_message(*chan("c1"))
+    assert out.sent == []
+    assert "Ignoring @sara" in await bridge.ignore("@sara")
+    await bridge.on_rocket_message(*dm("d1"))
+    assert out.sent == []
+    assert "forwarded again" in bridge.unignore("#general")
+    assert "forwarded again" in bridge.unignore(0)  # @sara is now first
+    assert bridge.ignored_rooms() == []
+    await bridge.on_rocket_message(*dm("d2"))
+    assert len(out.sent) == 1
+    assert "not in the ignored list" in bridge.unignore("#nope")
+    assert "not in the ignored list" in bridge.unignore(5)
+
+
+async def test_ignore_matches_by_room_id_even_if_renamed(parts):
+    bridge, out, _, _ = parts
+    bridge.set_scope("all")
+    await bridge.ignore_rid("r-gen")
+    await bridge.on_rocket_message(*chan("c1", room="general-renamed"))
+    assert out.sent == []
+    assert "no longer" in await bridge.ignore_rid("gone")
+
+
+async def test_env_ignore_list_is_default_and_reset_restores_it(env, tmp_path):
+    from telerocket.config import build_config
+
+    cfg = build_config(dict(env, IGNORE_ROOMS="random", DATA_DIR=str(tmp_path)))
+    out, rest, store = FakeOut(), FakeRest(), Store(":memory:")
+    bridge = Bridge(cfg, rest, store, out, ME)
+    assert [r.label for r in bridge.ignored_rooms()] == ["#random"]
+    assert bridge.is_ignored("any-rid", "Random")
+    bridge.unignore("#random")  # .env rooms can be un-ignored from Telegram too
+    assert not bridge.is_ignored("any-rid", "random")
+    bridge.set_scope("all")
+    bridge.set_confirm(True)
+    bridge.reset_settings()
+    assert bridge.is_ignored("any-rid", "random")
+    assert bridge.forward_scope == "dm_mentions" and bridge.confirm_before_send is False
+
+
+async def test_settings_text(parts):
+    bridge, _, _, _ = parts
+    await bridge.ignore("#general")
+    text = bridge.settings_text()
+    assert "DMs + mentions" in text and "Confirm before sending: off" in text and "#general" in text

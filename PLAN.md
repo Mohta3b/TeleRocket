@@ -81,6 +81,9 @@ Telegram → Rocket.Chat (owner only):
 - `/to <@user | #channel | room>` → set the active chat by name.
 - `/send <@user | #channel> <text>` → one-off message.
 - `/status`, `/pause`, `/resume`, `/help`.
+- `/settings` (buttons), `/scope`, `/confirm`, `/ignore`, `/unignore`: change
+  forwarding scope, send confirmation and ignored chats at runtime. Saved in the
+  local store, override `.env` until reset.
 - Every sent message is confirmed with a ✅ reaction-like reply or an error.
 
 Reliability: websocket keep-alive (answer DDP pings), reconnect with

@@ -41,7 +41,14 @@ Commands
 /send @user | #channel text – send one message
 /status – connection and settings
 /pause, /resume – stop / restart forwarding
-/help – this text"""
+/settings – change settings with buttons
+/ignore #room | @user – stop forwarding a chat (no argument: pick from a list)
+/unignore #room | @user – forward it again (no argument: pick from a list)
+/scope all | dm_mentions – what gets forwarded
+/confirm on | off – ask before sending
+/help – this text
+
+Settings changed here are saved and override .env until you reset them in /settings."""
 
 COMMANDS = [
     BotCommand("chats", "Pick the active Rocket.Chat chat"),
@@ -50,6 +57,11 @@ COMMANDS = [
     BotCommand("status", "Connection and settings"),
     BotCommand("pause", "Pause forwarding"),
     BotCommand("resume", "Resume forwarding"),
+    BotCommand("settings", "Change settings"),
+    BotCommand("ignore", "Stop forwarding a chat"),
+    BotCommand("unignore", "Forward an ignored chat again"),
+    BotCommand("scope", "What gets forwarded: all or dm_mentions"),
+    BotCommand("confirm", "Ask before sending: on or off"),
     BotCommand("help", "How to use the bridge"),
 ]
 
@@ -141,6 +153,37 @@ def preview_markup(pending: PendingSend) -> InlineKeyboardMarkup:
     )
 
 
+def settings_markup(bridge: Bridge) -> InlineKeyboardMarkup:
+    scope = bridge.forward_scope
+    confirm = bridge.confirm_before_send
+    ignored = len(bridge.ignored_rooms())
+
+    def mark(label: str, on: bool) -> str:
+        return f"✓ {label}" if on else label
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(mark("DMs + mentions", scope == "dm_mentions"), callback_data="set:scope:dm_mentions"),
+                InlineKeyboardButton(mark("All messages", scope == "all"), callback_data="set:scope:all"),
+            ],
+            [
+                InlineKeyboardButton(mark("Confirm: on", confirm), callback_data="set:confirm:on"),
+                InlineKeyboardButton(mark("Confirm: off", not confirm), callback_data="set:confirm:off"),
+            ],
+            [
+                InlineKeyboardButton("🔕 Ignore a chat", callback_data="set:ignore"),
+                InlineKeyboardButton(f"🔔 Un-ignore ({ignored})", callback_data="set:unignore"),
+            ],
+            [InlineKeyboardButton("↩️ Reset to .env", callback_data="set:reset")],
+        ]
+    )
+
+
+def _back_row() -> list[InlineKeyboardButton]:
+    return [InlineKeyboardButton("« Back", callback_data="set:menu")]
+
+
 def owner_filter(owner_id: int) -> filters.BaseFilter:
     return filters.User(user_id=owner_id) & filters.ChatType.PRIVATE
 
@@ -195,7 +238,7 @@ def build_handlers(bridge: Bridge, owner_id: int) -> list:
         if not text.strip():
             await message.reply_text("Nothing to send.", disable_notification=True)
             return
-        if not bridge.config.confirm_before_send:
+        if not bridge.confirm_before_send:
             result = await bridge.deliver(target, text)
             await message.reply_text(result, disable_notification=True)
             return
@@ -215,6 +258,117 @@ def build_handlers(bridge: Bridge, owner_id: int) -> list:
             await answer(update, "Usage: /send @username your message")
             return
         await send_or_confirm(update, await bridge.resolve_named(parts[1]), parts[2])
+
+    # --- settings ---------------------------------------------------
+    async def show_settings(update: Update, note: str | None = None) -> None:
+        text = (f"{note}\n\n" if note else "") + bridge.settings_text()
+        await update.effective_message.reply_text(
+            text, reply_markup=settings_markup(bridge), disable_notification=True
+        )
+
+    async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await show_settings(update)
+
+    async def scope_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not context.args:
+            await show_settings(update)
+            return
+        await answer(update, bridge.set_scope(context.args[0]))
+
+    async def confirm_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        arg = (context.args[0].lower() if context.args else "")
+        if arg in {"on", "true", "yes", "1"}:
+            await answer(update, bridge.set_confirm(True))
+        elif arg in {"off", "false", "no", "0"}:
+            await answer(update, bridge.set_confirm(False))
+        else:
+            await answer(update, "Usage: /confirm on or /confirm off")
+
+    async def ignore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if context.args:
+            await answer(update, await bridge.ignore(" ".join(context.args)))
+            return
+        markup = await ignore_picker()
+        await update.effective_message.reply_text(
+            "Which chat should I stop forwarding?" if markup else "No chats found.",
+            reply_markup=markup,
+        )
+
+    async def unignore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if context.args:
+            await answer(update, bridge.unignore(" ".join(context.args)))
+            return
+        markup = unignore_picker()
+        await update.effective_message.reply_text(
+            "Which chat should be forwarded again?" if markup else "No chats are ignored.",
+            reply_markup=markup,
+        )
+
+    async def ignore_picker(with_back: bool = False) -> InlineKeyboardMarkup | None:
+        try:
+            rooms = await bridge.recent_rooms(limit=20)
+        except Exception as exc:
+            log.warning("could not list rooms: %s", exc)
+            return None
+        rows = [
+            [InlineKeyboardButton(room.label[:60], callback_data=f"ign:{room.rid}")]
+            for room in rooms
+            if not bridge.is_ignored(room.rid, room.name)
+        ][:12]
+        if with_back:
+            rows.append(_back_row())
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    def unignore_picker(with_back: bool = False) -> InlineKeyboardMarkup | None:
+        rows = [
+            [InlineKeyboardButton(f"🔔 {room.label}"[:60], callback_data=f"unign:{i}")]
+            for i, room in enumerate(bridge.ignored_rooms())
+        ]
+        if with_back:
+            rows.append(_back_row())
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def on_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if query.from_user is None or query.from_user.id != owner_id:
+            log.warning("ignored button press from non-owner user id %s", getattr(query.from_user, "id", "?"))
+            await query.answer()
+            return
+        data = query.data or ""
+        note = None
+        if data.startswith("set:scope:"):
+            note = bridge.set_scope(data.split(":", 2)[2])
+        elif data.startswith("set:confirm:"):
+            note = bridge.set_confirm(data.endswith(":on"))
+        elif data == "set:reset":
+            note = bridge.reset_settings()
+        elif data == "set:ignore":
+            await query.answer()
+            markup = await ignore_picker(with_back=True)
+            await query.edit_message_text(
+                "Which chat should I stop forwarding?",
+                reply_markup=markup or InlineKeyboardMarkup([_back_row()]),
+            )
+            return
+        elif data == "set:unignore":
+            await query.answer()
+            markup = unignore_picker(with_back=True)
+            await query.edit_message_text(
+                "Which chat should be forwarded again?" if markup and len(markup.inline_keyboard) > 1
+                else "No chats are ignored.",
+                reply_markup=markup or InlineKeyboardMarkup([_back_row()]),
+            )
+            return
+        elif data.startswith("ign:"):
+            note = await bridge.ignore_rid(data[4:])
+        elif data.startswith("unign:"):
+            try:
+                note = bridge.unignore(int(data[6:]))
+            except ValueError:
+                note = "⚠️ Unknown room."
+        await query.answer(note[:190] if note else None)
+        text = (f"{note}\n\n" if note else "") + bridge.settings_text()
+        await query.edit_message_text(text, reply_markup=settings_markup(bridge))
 
     async def on_confirm_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
@@ -274,6 +428,12 @@ def build_handlers(bridge: Bridge, owner_id: int) -> list:
         CommandHandler("chats", chats_cmd, filters=owner),
         CommandHandler("to", to_cmd, filters=owner),
         CommandHandler("send", send_cmd, filters=owner),
+        CommandHandler("settings", settings_cmd, filters=owner),
+        CommandHandler("scope", scope_cmd, filters=owner),
+        CommandHandler("confirm", confirm_cmd, filters=owner),
+        CommandHandler("ignore", ignore_cmd, filters=owner),
+        CommandHandler("unignore", unignore_cmd, filters=owner),
+        CallbackQueryHandler(on_settings_button, pattern=r"^(set:|ign:|unign:)"),
         CallbackQueryHandler(on_room_button, pattern=r"^room:"),
         CallbackQueryHandler(on_confirm_button, pattern=r"^(send|cancel):"),
         MessageHandler(owner & filters.TEXT & ~filters.COMMAND, on_text),

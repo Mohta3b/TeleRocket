@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
 import time
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from html import escape
 from typing import Any, Protocol
 
-from .config import Config
+from .config import FORWARD_SCOPES, Config
 from .formatting import Identity, format_message, room_type, should_forward
 from .rocket.rest import Room, RocketChatError, RocketChatRest
 from .store import ReplyTarget, Store
@@ -19,6 +20,24 @@ log = logging.getLogger(__name__)
 
 OUTAGE_NOTICE_DELAY = 90.0  # seconds offline before telling the owner
 PENDING_TTL = 30 * 60.0  # unconfirmed messages are dropped after 30 minutes
+
+
+SCOPE_LABELS = {"dm_mentions": "DMs + mentions", "all": "All messages"}
+
+
+@dataclass(frozen=True)
+class IgnoredRoom:
+    """A room whose messages are not forwarded. Matched by room id when known,
+    otherwise by name (rooms listed in IGNORE_ROOMS in .env)."""
+
+    label: str
+    rid: str | None = None
+    name: str | None = None
+
+    def matches(self, rid: str, room_name: str) -> bool:
+        if self.rid and self.rid == rid:
+            return True
+        return bool(self.name) and self.name == room_name.lower()
 
 
 @dataclass(frozen=True)
@@ -77,9 +96,9 @@ class Bridge:
     async def on_rocket_message(self, msg: dict[str, Any], meta: dict[str, Any]) -> None:
         if self.paused:
             return
-        if not should_forward(
-            msg, meta, self.me, scope=self.config.forward_scope, ignore_rooms=self.config.ignore_rooms
-        ):
+        if not should_forward(msg, meta, self.me, scope=self.forward_scope):
+            return
+        if self.is_ignored(msg.get("rid", ""), meta.get("roomName") or ""):
             return
         msg_id = msg.get("_id")
         if not msg_id or not self.store.mark_seen(msg_id):
@@ -256,6 +275,112 @@ class Bridge:
         return f"✅ Sent to {label}{thread}"
 
     # ------------------------------------------------------------------
+    # Settings changeable from Telegram.
+    # Values set from Telegram are saved in the local store, apply at once
+    # and survive restarts. Until a setting is changed from Telegram (or
+    # after a reset) the value from .env is used.
+    # ------------------------------------------------------------------
+    @property
+    def forward_scope(self) -> str:
+        scope = self.store.get("forward_scope")
+        return scope if scope in FORWARD_SCOPES else self.config.forward_scope
+
+    def set_scope(self, scope: str) -> str:
+        scope = scope.strip().lower().replace("+", "_").replace("-", "_")
+        scope = {"dm": "dm_mentions", "dms": "dm_mentions", "mentions": "dm_mentions"}.get(scope, scope)
+        if scope not in FORWARD_SCOPES:
+            return "⚠️ Choose one of: all, dm_mentions"
+        self.store.set("forward_scope", scope)
+        return f"Forwarding: {SCOPE_LABELS[scope]}"
+
+    @property
+    def confirm_before_send(self) -> bool:
+        value = self.store.get("confirm_before_send")
+        return self.config.confirm_before_send if value is None else value == "1"
+
+    def set_confirm(self, enabled: bool) -> str:
+        self.store.set("confirm_before_send", "1" if enabled else "0")
+        return f"Confirm before sending: {'on' if enabled else 'off'}"
+
+    def ignored_rooms(self) -> list[IgnoredRoom]:
+        raw = self.store.get("ignored_rooms")
+        if raw is None:
+            return [IgnoredRoom(label=f"#{n}", name=n) for n in sorted(self.config.ignore_rooms)]
+        try:
+            return [IgnoredRoom(**item) for item in json.loads(raw)]
+        except (ValueError, TypeError):
+            log.warning("ignored room list in the store is unreadable; using .env")
+            return [IgnoredRoom(label=f"#{n}", name=n) for n in sorted(self.config.ignore_rooms)]
+
+    def _save_ignored(self, rooms: list[IgnoredRoom]) -> None:
+        self.store.set(
+            "ignored_rooms",
+            json.dumps([{"label": r.label, "rid": r.rid, "name": r.name} for r in rooms]),
+        )
+
+    def is_ignored(self, rid: str, room_name: str) -> bool:
+        return any(room.matches(rid, room_name) for room in self.ignored_rooms())
+
+    def _ignore(self, rid: str, label: str, name: str) -> str:
+        rooms = self.ignored_rooms()
+        if any(r.matches(rid, name) for r in rooms):
+            return f"{label} is already ignored."
+        rooms.append(IgnoredRoom(label=label, rid=rid, name=name.lower() or None))
+        self._save_ignored(rooms)
+        return f"🔕 Ignoring {label}. Its messages won't be forwarded. Undo with /unignore."
+
+    async def ignore(self, target: str) -> str:
+        try:
+            room = await self.rest.resolve_room(target)
+        except RocketChatError as exc:
+            return f"⚠️ {exc}"
+        return self._ignore(room.rid, room.target, room.name)
+
+    async def ignore_rid(self, rid: str) -> str:
+        try:
+            rooms = await self.rest.list_rooms()
+        except RocketChatError as exc:
+            return f"⚠️ {exc}"
+        for room in rooms:
+            if room.rid == rid:
+                return self._ignore(room.rid, room.target, room.name)
+        return "⚠️ That chat is no longer in your list."
+
+    def unignore(self, which: str | int) -> str:
+        """Un-ignore by list position (int) or by '#name' / '@user' / label."""
+        rooms = self.ignored_rooms()
+        if isinstance(which, int):
+            index = which if 0 <= which < len(rooms) else None
+        else:
+            key = which.strip().lstrip("#@").lower()
+            index = next(
+                (i for i, r in enumerate(rooms)
+                 if key in {(r.name or ""), r.label.lstrip("#@").lower()}),
+                None,
+            )
+        if index is None:
+            return "⚠️ That room is not in the ignored list. See /settings."
+        removed = rooms.pop(index)
+        self._save_ignored(rooms)
+        return f"🔔 {removed.label} will be forwarded again."
+
+    def reset_settings(self) -> str:
+        for key in ("forward_scope", "confirm_before_send", "ignored_rooms"):
+            self.store.set(key, None)
+        return "↩️ Settings reset to the values in .env."
+
+    def settings_text(self) -> str:
+        ignored = self.ignored_rooms()
+        names = ", ".join(r.label for r in ignored) if ignored else "none"
+        return (
+            "⚙️ Settings (saved, apply immediately)\n"
+            f"Forwarding: {SCOPE_LABELS[self.forward_scope]}"
+            f"{' (paused)' if self.paused else ''}\n"
+            f"Confirm before sending: {'on' if self.confirm_before_send else 'off'}\n"
+            f"Ignored rooms: {names}"
+        )
+
+    # ------------------------------------------------------------------
     # Control
     # ------------------------------------------------------------------
     def pause(self) -> str:
@@ -273,8 +398,9 @@ class Bridge:
             f"Rocket.Chat: {conn}\n"
             f"Server: {self.config.rocket_url}\n"
             f"Logged in as: @{self.me.username}\n"
-            f"Forwarding: {'paused' if self.paused else self.config.forward_scope}\n"
+            f"Forwarding: {'paused' if self.paused else SCOPE_LABELS[self.forward_scope]}\n"
             f"Active chat: {active}\n"
-            f"Confirm before sending: {'on' if self.config.confirm_before_send else 'off'}\n"
+            f"Confirm before sending: {'on' if self.confirm_before_send else 'off'}\n"
+            f"Ignored rooms: {len(self.ignored_rooms())}\n"
             f"Forwarded since start: {self.forwarded_count}"
         )

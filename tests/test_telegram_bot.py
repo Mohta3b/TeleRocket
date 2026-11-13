@@ -52,7 +52,7 @@ def bridge():
     from telerocket.bridge import PendingSend, SendTarget
 
     b = MagicMock()
-    b.config.confirm_before_send = False
+    b.confirm_before_send = False
     target = SendTarget("r-dm", None, "@sara", make_active=True)
     b.target = target
     b.resolve_reply.return_value = target
@@ -163,7 +163,7 @@ async def test_send_command_parsing(handlers, bridge):
 
 
 async def test_confirmation_preview_instead_of_sending(handlers, bridge):
-    bridge.config.confirm_before_send = True
+    bridge.confirm_before_send = True
     upd = make_update(OWNER, "see you <tomorrow>", reply_to=77)
     reply = _patch_reply(upd)
     await first_matching(handlers, upd).callback(upd, _ctx())
@@ -206,7 +206,8 @@ async def test_confirm_and_cancel_buttons(handlers, bridge):
 
 
 async def test_button_from_stranger_ignored(handlers, bridge):
-    cb = next(h for h in handlers if isinstance(h, CallbackQueryHandler))
+    cb = next(h for h in handlers if isinstance(h, CallbackQueryHandler)
+              and h.callback.__name__ == "on_room_button")
     query = MagicMock()
     query.from_user.id = STRANGER
     query.data = "room:r1"
@@ -219,3 +220,91 @@ async def test_button_from_stranger_ignored(handlers, bridge):
     query.edit_message_text = AsyncMock()
     await cb.callback(update, _ctx())
     bridge.set_active_rid.assert_awaited_once_with("r1")
+
+
+@pytest.fixture
+def real_bridge(config):
+    from telerocket.bridge import Bridge
+    from telerocket.formatting import Identity
+    from telerocket.store import Store
+
+    from .test_bridge import FakeOut, FakeRest
+
+    return Bridge(config, FakeRest(), Store(":memory:"), FakeOut(), Identity("me123", "amir"))
+
+
+def _settings_cb(handlers):
+    return next(h for h in handlers if isinstance(h, CallbackQueryHandler)
+                and h.callback.__name__ == "on_settings_button")
+
+
+def _query(data, user=OWNER):
+    query = MagicMock()
+    query.from_user.id = user
+    query.data = data
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    return query, MagicMock(callback_query=query)
+
+
+async def test_settings_buttons_change_settings(real_bridge):
+    handlers = build_handlers(real_bridge, OWNER)
+    cb = _settings_cb(handlers)
+
+    query, update = _query("set:scope:all")
+    await cb.callback(update, _ctx())
+    assert real_bridge.forward_scope == "all"
+    markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+    assert markup.inline_keyboard[0][1].text == "✓ All messages"
+
+    query, update = _query("set:confirm:on")
+    await cb.callback(update, _ctx())
+    assert real_bridge.confirm_before_send is True
+
+    query, update = _query("set:ignore")
+    await cb.callback(update, _ctx())
+    rows = query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard
+    assert rows[0][0].callback_data == "ign:r-dm" and rows[-1][0].callback_data == "set:menu"
+
+    query, update = _query("ign:r-gen")
+    await cb.callback(update, _ctx())
+    assert real_bridge.is_ignored("r-gen", "general")
+
+    query, update = _query("unign:0")
+    await cb.callback(update, _ctx())
+    assert real_bridge.ignored_rooms() == []
+
+    query, update = _query("set:reset")
+    await cb.callback(update, _ctx())
+    assert real_bridge.forward_scope == "dm_mentions" and real_bridge.confirm_before_send is False
+
+
+async def test_settings_buttons_ignore_strangers(real_bridge):
+    cb = _settings_cb(build_handlers(real_bridge, OWNER))
+    query, update = _query("set:scope:all", user=STRANGER)
+    await cb.callback(update, _ctx())
+    assert real_bridge.forward_scope == "dm_mentions"
+    query.edit_message_text.assert_not_called()
+
+
+@pytest.mark.parametrize("text", ["/settings", "/ignore #general", "/scope all", "/confirm on", "/unignore"])
+def test_settings_commands_owner_only(handlers, text):
+    assert first_matching(handlers, make_update(STRANGER, text)).callback.__name__ == "on_stranger"
+    assert first_matching(handlers, make_update(OWNER, text)).callback.__name__.endswith("_cmd")
+
+
+async def test_settings_commands(real_bridge):
+    handlers = build_handlers(real_bridge, OWNER)
+
+    async def run(text, args):
+        upd = make_update(OWNER, text)
+        reply = _patch_reply(upd)
+        await first_matching(handlers, upd).callback(upd, _ctx(args))
+        return reply.await_args.args[0]
+
+    assert "All messages" in await run("/scope all", ["all"])
+    assert "on" in await run("/confirm on", ["on"])
+    assert "Usage" in await run("/confirm maybe", ["maybe"])
+    assert "Ignoring #general" in await run("/ignore #general", ["#general"])
+    assert "forwarded again" in await run("/unignore #general", ["#general"])
+    assert "Settings" in await run("/settings", [])
