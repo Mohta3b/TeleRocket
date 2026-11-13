@@ -35,73 +35,129 @@ from .telegram_bot import (
 log = logging.getLogger("telerocket")
 
 
+EXIT_OK = 0
+EXIT_CONFIG = 2  # bad config / rejected credentials: restarting won't help
+
+
 async def verify_rocket(config: Config, rest: RocketChatRest) -> Identity:
     me = await rest.me()
     if me.get("_id") != config.rocket_user_id:
-        raise RocketChatError("ROCKETCHAT_USER_ID does not match the token's user")
+        raise RocketChatAuthError("ROCKETCHAT_USER_ID does not match the token's user")
     return Identity(user_id=me["_id"], username=me.get("username", ""))
 
 
-async def run(config: Config) -> int:
-    rest = RocketChatRest(config.rocket_url, config.rocket_user_id, config.rocket_token)
-    store = Store(config.data_dir / "telerocket.sqlite3")
-    store.prune()
+async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
+    """Sleep, waking early if stop is set. Returns True if stopping."""
     try:
-        me = await verify_rocket(config, rest)
-    except RocketChatError as exc:
-        log.error("Rocket.Chat check failed: %s", exc)
-        await rest.aclose()
-        return 2
-    log.info("Rocket.Chat login OK as @%s", me.username)
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+    except asyncio.TimeoutError:
+        return False
+    return True
 
-    app = build_application(config.telegram_bot_token, config.telegram_proxy_url)
-    if config.telegram_proxy_url:
-        log.info("Telegram via proxy %s", describe_proxy(config.telegram_proxy_url))
-    sender = TelegramSender(app, config.telegram_owner_id)
-    bridge = Bridge(config, rest, store, sender, me)
-    app.add_handlers(build_handlers(bridge, config.telegram_owner_id))
-    realtime = RocketRealtime(
-        config.rocket_ws_url,
-        config.rocket_user_id,
-        config.rocket_token,
-        bridge.on_rocket_message,
-        on_state=bridge.on_rocket_state,
-    )
 
-    stop = asyncio.Event()
+async def retry_until_ready(what, func, stop, *, first_delay=5.0, max_delay=120.0):
+    """Run ``func`` until it succeeds, retrying network errors with backoff.
+
+    At boot the network or the proxy (e.g. Hiddify) may not be up yet, so
+    connection problems are retried forever instead of exiting. Rejected
+    credentials are not retried. Returns None if stopped while waiting.
+    """
+    delay = first_delay
+    while not stop.is_set():
+        try:
+            return await func()
+        except (RocketChatAuthError, InvalidToken, Forbidden):
+            raise
+        except (RocketChatError, NetworkError, OSError) as exc:
+            log.warning("%s not reachable yet (%s); retrying in %.0fs", what, exc, delay)
+        if await _sleep_or_stop(stop, delay):
+            break
+        delay = min(delay * 2, max_delay)
+    return None
+
+
+async def run(config: Config, *, stop: asyncio.Event | None = None) -> int:
+    stop = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
+    rest = RocketChatRest(config.rocket_url, config.rocket_user_id, config.rocket_token)
+    store = Store(config.data_dir / "telerocket.sqlite3")
+    store.prune()
+    app = build_application(config.telegram_bot_token, config.telegram_proxy_url)
+    initialized = False
     try:
-        async with app:
+        me = await retry_until_ready("Rocket.Chat", lambda: verify_rocket(config, rest), stop)
+        if me is None:
+            return EXIT_OK
+        log.info("Rocket.Chat login OK as @%s", me.username)
+
+        if config.telegram_proxy_url:
+            log.info("Telegram via proxy %s", describe_proxy(config.telegram_proxy_url))
+        if await retry_until_ready(_telegram_label(config), _initializer(app), stop) is None:
+            return EXIT_OK
+        initialized = True
+
+        sender = TelegramSender(app, config.telegram_owner_id)
+        bridge = Bridge(config, rest, store, sender, me)
+        app.add_handlers(build_handlers(bridge, config.telegram_owner_id))
+
+        async def announce():
             await install_commands(app, config.telegram_owner_id)
-            try:
-                await sender.send(f"🚀 TeleRocket started. Bridging @{me.username} on {config.rocket_url}")
-            except Forbidden:
-                log.error("Telegram refused to message you: open your bot in Telegram and press Start, "
-                          "and check TELEGRAM_OWNER_ID")
-                return 2
-            await app.start()
-            await app.updater.start_polling(allowed_updates=["message", "callback_query"])
-            rt_task = asyncio.create_task(realtime.run())
-            log.info("TeleRocket is running. Press Ctrl+C to stop.")
-            await stop.wait()
-            log.info("Stopping...")
-            await realtime.stop()
-            await asyncio.wait_for(rt_task, 10)
-            await app.updater.stop()
-            await app.stop()
+            await sender.send(f"🚀 TeleRocket started. Bridging @{me.username} on {config.rocket_url}")
+            return True
+
+        if await retry_until_ready(_telegram_label(config), announce, stop) is None:
+            return EXIT_OK
+
+        realtime = RocketRealtime(
+            config.rocket_ws_url,
+            config.rocket_user_id,
+            config.rocket_token,
+            bridge.on_rocket_message,
+            on_state=bridge.on_rocket_state,
+        )
+        await app.start()
+        await app.updater.start_polling(allowed_updates=["message", "callback_query"])
+        rt_task = asyncio.create_task(realtime.run())
+        log.info("TeleRocket is running.")
+        await stop.wait()
+        log.info("Stopping...")
+        await realtime.stop()
+        await asyncio.wait_for(rt_task, 10)
+        await app.updater.stop()
+        await app.stop()
+        return EXIT_OK
+    except RocketChatAuthError as exc:
+        log.error("Rocket.Chat: %s", exc)
+        return EXIT_CONFIG
     except InvalidToken:
         log.error("Telegram rejected TELEGRAM_BOT_TOKEN")
-        return 2
-    except NetworkError as exc:
-        log.error("Cannot reach Telegram (%s). %s", exc, _network_hint(config.telegram_proxy_url))
-        return 3
+        return EXIT_CONFIG
+    except Forbidden:
+        log.error("Telegram refused to message you: open your bot in Telegram and press Start, "
+                  "and check TELEGRAM_OWNER_ID")
+        return EXIT_CONFIG
     finally:
+        if initialized:
+            await app.shutdown()
         await rest.aclose()
         store.close()
-    return 0
+
+
+def _telegram_label(config: Config) -> str:
+    if config.telegram_proxy_url:
+        return f"Telegram (via proxy {describe_proxy(config.telegram_proxy_url)})"
+    return "Telegram"
+
+
+def _initializer(app):
+    async def init():
+        await app.initialize()
+        return True
+
+    return init
 
 
 async def check(config: Config) -> int:
