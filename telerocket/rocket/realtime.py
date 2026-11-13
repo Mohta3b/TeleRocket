@@ -73,7 +73,10 @@ class RocketRealtime:
         while not self._stopping.is_set():
             try:
                 async with connect(
-                    self._ws_url, open_timeout=self._timeout, max_size=8 * 1024 * 1024
+                    self._ws_url,
+                    open_timeout=self._timeout,
+                    max_size=8 * 1024 * 1024,
+                    proxy=None,  # always direct, ignore proxy env vars
                 ) as ws:
                     self._ws = ws
                     await self._handshake(ws)

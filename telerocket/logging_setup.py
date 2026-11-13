@@ -16,6 +16,9 @@ REDACTED = "***"
 # Telegram bot tokens look like 123456789:AA... ; catch them even if unknown.
 _BOT_TOKEN_RE = re.compile(r"(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}")
 
+# user:password@ inside any URL (e.g. a proxy address).
+_URL_CREDS_RE = re.compile(r"(?<=://)[^/\s:@]+:[^/\s@]+@")
+
 _NOISY_LOGGERS = ("httpx", "httpcore", "telegram", "websockets", "apscheduler")
 
 
@@ -28,6 +31,7 @@ class RedactingFilter(logging.Filter):
     def redact(self, text: str) -> str:
         for secret in self._secrets:
             text = text.replace(secret, REDACTED)
+        text = _URL_CREDS_RE.sub(REDACTED + "@", text)
         return _BOT_TOKEN_RE.sub(REDACTED, text)
 
     def filter(self, record: logging.LogRecord) -> bool:

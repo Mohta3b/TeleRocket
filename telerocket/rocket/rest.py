@@ -60,6 +60,7 @@ class RocketChatRest:
             timeout=timeout,
             transport=transport,
             follow_redirects=False,  # never send the token to a redirect target
+            trust_env=False,  # always connect directly, ignore HTTP(S)_PROXY env vars
         )
 
     async def aclose(self) -> None:

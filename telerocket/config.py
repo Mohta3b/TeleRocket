@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 FORWARD_SCOPES = ("dm_mentions", "all")
+PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
 
 
 class ConfigError(ValueError):
@@ -30,11 +31,17 @@ class Config:
     ignore_rooms: frozenset[str] = field(default_factory=frozenset)
     data_dir: Path = Path("data")
     log_level: str = "INFO"
+    telegram_proxy_url: str | None = None
 
     @property
     def secrets(self) -> list[str]:
         """Values that must never appear in logs."""
-        return [self.rocket_token, self.telegram_bot_token, self.rocket_user_id]
+        values = [self.rocket_token, self.telegram_bot_token, self.rocket_user_id]
+        if self.telegram_proxy_url:
+            parsed = urlparse(self.telegram_proxy_url)
+            values += [v for v in (parsed.password, parsed.username) if v]
+            values.append(self.telegram_proxy_url)
+        return values
 
     @property
     def rocket_ws_url(self) -> str:
@@ -49,10 +56,39 @@ class Config:
             f"telegram_owner_id={self.telegram_owner_id}, "
             f"forward_scope={self.forward_scope!r}, "
             f"ignore_rooms={sorted(self.ignore_rooms)!r}, "
-            f"data_dir={str(self.data_dir)!r}, log_level={self.log_level!r})"
+            f"data_dir={str(self.data_dir)!r}, log_level={self.log_level!r}, "
+            f"telegram_proxy_url={describe_proxy(self.telegram_proxy_url)!r})"
         )
 
     __str__ = __repr__
+
+
+def describe_proxy(url: str | None) -> str:
+    """Proxy address without credentials, safe to print."""
+    if not url:
+        return "none"
+    parsed = urlparse(url)
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+
+def parse_proxy_url(value: str | None) -> str | None:
+    """Validate an optional proxy URL such as socks5://127.0.0.1:1080."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    try:
+        parsed.port  # raises ValueError for a non-numeric / out of range port
+        valid_port = True
+    except ValueError:
+        valid_port = False
+    if parsed.scheme not in PROXY_SCHEMES or not parsed.hostname or not valid_port:
+        raise ConfigError(
+            "TELEGRAM_PROXY_URL must look like socks5://127.0.0.1:1080 or "
+            "http://127.0.0.1:8080 (schemes: " + ", ".join(PROXY_SCHEMES) + ")"
+        )
+    return value
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -137,6 +173,7 @@ def build_config(env: dict[str, str]) -> Config:
         ignore_rooms=ignore,
         data_dir=Path(env.get("DATA_DIR", "data").strip() or "data").expanduser(),
         log_level=(env.get("LOG_LEVEL", "INFO").strip() or "INFO").upper(),
+        telegram_proxy_url=parse_proxy_url(env.get("TELEGRAM_PROXY_URL")),
     )
 
 
@@ -170,4 +207,5 @@ _KNOWN_KEYS = {
     "DATA_DIR",
     "LOG_LEVEL",
     "ALLOW_INSECURE_HTTP",
+    "TELEGRAM_PROXY_URL",
 }

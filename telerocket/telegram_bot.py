@@ -21,6 +21,8 @@ from telegram.ext import (
     filters,
 )
 
+from telegram.request import HTTPXRequest
+
 from .bridge import Bridge
 
 log = logging.getLogger(__name__)
@@ -48,6 +50,41 @@ COMMANDS = [
     BotCommand("resume", "Resume forwarding"),
     BotCommand("help", "How to use the bridge"),
 ]
+
+
+def make_request(proxy_url: str | None, *, long_polling: bool = False) -> HTTPXRequest:
+    """HTTP client for the Telegram API, optionally through a proxy.
+
+    Timeouts are a bit longer than the defaults because proxies add latency.
+    """
+    return HTTPXRequest(
+        proxy=proxy_url,
+        connect_timeout=20.0,
+        read_timeout=30.0 if long_polling else 20.0,
+        write_timeout=20.0,
+        pool_timeout=5.0,
+        connection_pool_size=8 if not long_polling else 1,
+    )
+
+
+def build_application(token: str, proxy_url: str | None) -> Application:
+    return (
+        Application.builder()
+        .token(token)
+        .request(make_request(proxy_url))
+        .get_updates_request(make_request(proxy_url, long_polling=True))
+        .build()
+    )
+
+
+def build_bot(token: str, proxy_url: str | None):
+    from telegram import Bot
+
+    return Bot(
+        token,
+        request=make_request(proxy_url),
+        get_updates_request=make_request(proxy_url, long_polling=True),
+    )
 
 
 class TelegramSender:

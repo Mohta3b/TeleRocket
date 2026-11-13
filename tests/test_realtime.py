@@ -187,3 +187,19 @@ async def test_refused_subscription(server_factory):
     client = RocketRealtime(url, "uid", "tok", noop, on_state=on_state, min_backoff=0.05)
     await _run_until(client, failed.wait)
     assert "refused" in client.last_error
+
+
+async def test_realtime_ignores_proxy_env(server_factory, monkeypatch):
+    for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        monkeypatch.setenv(var, "http://127.0.0.1:1")  # nothing listens there
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    fake = FakeDDPServer()
+    url = await server_factory(fake)
+    done = asyncio.Event()
+
+    async def on_message(msg, meta):
+        done.set()
+
+    client = RocketRealtime(url, "uid", "tok", on_message)
+    await _run_until(client, done.wait)

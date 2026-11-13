@@ -100,3 +100,30 @@ def test_process_env_overrides_file(env, tmp_path, monkeypatch):
     monkeypatch.setenv("FORWARD_SCOPE", "all")
     cfg, _ = load_config(f)
     assert cfg.forward_scope == "all"
+
+
+@pytest.mark.parametrize("url", ["socks5://127.0.0.1:1080", "socks5h://u:p@proxy.local:1080",
+                                 "http://127.0.0.1:8080", "https://proxy.example.com:443"])
+def test_proxy_url_accepted(env, url):
+    env["TELEGRAM_PROXY_URL"] = url
+    assert build_config(env).telegram_proxy_url == url
+
+
+@pytest.mark.parametrize("url", ["127.0.0.1:1080", "ftp://x:1", "socks5://:1080", "http://h:notaport"])
+def test_proxy_url_rejected(env, url):
+    env["TELEGRAM_PROXY_URL"] = url
+    with pytest.raises(ConfigError, match="TELEGRAM_PROXY_URL"):
+        build_config(env)
+
+
+def test_proxy_optional(env):
+    env["TELEGRAM_PROXY_URL"] = "  "
+    assert build_config(env).telegram_proxy_url is None
+
+
+def test_proxy_credentials_are_secret(env):
+    env["TELEGRAM_PROXY_URL"] = "socks5://alice:pr0xyPass@proxy.local:1080"
+    cfg = build_config(env)
+    assert "pr0xyPass" in cfg.secrets and "alice" in cfg.secrets
+    assert "pr0xyPass" not in repr(cfg) and "alice" not in repr(cfg)
+    assert "socks5://proxy.local:1080" in repr(cfg)

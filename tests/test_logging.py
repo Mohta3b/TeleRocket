@@ -46,3 +46,10 @@ def test_setup_logging_end_to_end(capsys):
     assert "value *** here" in err
     assert "supersecret" not in err
     assert BOT_TOKEN not in err
+
+
+def test_redacts_credentials_in_any_url():
+    f = RedactingFilter([])
+    rec = _record("connect failed: socks5://bob:hunter22@10.0.0.1:1080 refused")
+    f.filter(rec)
+    assert rec.getMessage() == "connect failed: socks5://***@10.0.0.1:1080 refused"
