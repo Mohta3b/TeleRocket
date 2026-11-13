@@ -193,21 +193,59 @@ server), so they need no credentials or network.
 
 ## Run it in the background (start with the laptop)
 
-A systemd user service is included:
+Pick **one** of the two options below. Run only one copy of the bridge at a
+time (terminal, service or container): two copies polling the same bot make
+Telegram return "Conflict" errors. So stop `uv run telerocket` in your terminal
+before installing either option.
+
+Both options wait patiently at boot: if the network or your proxy (Hiddify)
+isn't up yet, the bridge keeps retrying (every 5s, slowing down to every 2 min)
+instead of giving up. If your credentials are rejected it stops and logs why;
+fix `.env` and restart.
+
+### Option A: systemd user service (recommended)
+
+Simplest and lightest; uses the project's own environment.
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/telerocket.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now telerocket
+scripts/service.sh install
 ```
 
-- Logs: `journalctl --user -u telerocket -f`
-- Restart after editing `.env`: `systemctl --user restart telerocket`
-- To keep it running even when you are logged out: `sudo loginctl enable-linger $USER`
+That's it: it starts now and every time you log in, and restarts itself if it
+crashes. Other commands:
 
-The service file assumes the project is in `~/Applications/TeleRocket` and
-`uv` is at `/snap/bin/uv`; edit it if that changes.
+| Command | What it does |
+| --- | --- |
+| `scripts/service.sh status` | Is it running? |
+| `scripts/service.sh logs` | Follow the logs (Ctrl+C stops following, not the bridge) |
+| `scripts/service.sh restart` | Restart, e.g. after editing `.env` |
+| `scripts/service.sh uninstall` | Stop and remove it |
+
+To start it right after boot even before you log in, run once:
+`sudo loginctl enable-linger $USER`.
+
+If you move the project folder, run `scripts/service.sh install` again.
+
+### Option B: Docker container
+
+```bash
+docker compose up -d --build
+```
+
+- Starts on every boot as long as Docker itself starts at boot
+  (`sudo systemctl enable docker`, usually already on).
+- Logs: `docker compose logs -f` · Stop: `docker compose down` ·
+  After editing `.env`: `docker compose up -d` · After updating the code:
+  `docker compose up -d --build`.
+- It uses host networking, so it reaches Hiddify on `127.0.0.1:12334` and
+  Rocket.Chat directly, exactly like the host. It also reads the host's
+  `/etc/hosts`, which matters if company addresses are defined there.
+- Secrets stay out of the image: `.env` is excluded from the build and passed
+  in only when the container starts. The container runs as a non-root user
+  with a read-only filesystem; its database lives in the `telerocket-data` volume.
+- If the build can't download Python packages, export your proxy first,
+  e.g. `export HTTPS_PROXY=http://127.0.0.1:12334`, then build again.
+  The proxy is used only during the build and is not stored in the image.
 
 ## Security notes
 

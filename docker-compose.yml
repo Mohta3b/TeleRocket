@@ -1,0 +1,47 @@
+# Run TeleRocket in a container:
+#   docker compose up -d --build     start (and on every boot, while Docker runs)
+#   docker compose logs -f           follow logs
+#   docker compose down              stop
+services:
+  telerocket:
+    build:
+      context: .
+      # Build on the host network so the build can use your proxy if PyPI
+      # needs one; HTTP(S)_PROXY from your shell are passed through (if set)
+      # and are not stored in the image.
+      network: host
+      args:
+        - HTTP_PROXY
+        - HTTPS_PROXY
+        - NO_PROXY
+    image: telerocket:local
+    container_name: telerocket
+    restart: unless-stopped
+    # Host networking: the container reaches your local proxy on 127.0.0.1
+    # (e.g. Hiddify on 127.0.0.1:12334) and Rocket.Chat directly, like the host does.
+    network_mode: host
+    env_file: .env
+    environment:
+      DATA_DIR: /data   # overrides DATA_DIR from .env
+    volumes:
+      - telerocket-data:/data
+      # Use the host's name resolution. Some company hosts are only defined
+      # in the host's /etc/hosts (or its DNS setup), which a container
+      # would otherwise not see.
+      - /etc/hosts:/etc/hosts:ro
+      - /etc/resolv.conf:/etc/resolv.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  telerocket-data:
