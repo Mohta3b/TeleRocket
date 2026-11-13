@@ -23,7 +23,9 @@ from telegram.ext import (
 
 from telegram.request import HTTPXRequest
 
-from .bridge import Bridge
+from html import escape
+
+from .bridge import Bridge, PendingSend
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +106,41 @@ class TelegramSender:
         return message.message_id
 
 
+PREVIEW_TEXT_LIMIT = 3000
+QUOTE_LIMIT = 200
+RULE = "──────────"
+
+
+def _quote(text: str | None) -> str | None:
+    if not text:
+        return None
+    one_line = " ".join(text.split())
+    return one_line if len(one_line) <= QUOTE_LIMIT else one_line[: QUOTE_LIMIT - 1] + "…"
+
+
+def describe_pending(pending: PendingSend) -> str:
+    """Recipient, quoted message and text, as Telegram HTML."""
+    target = pending.target
+    lines = [f"<b>To:</b> {escape(target.label)}" + (" · in thread 🧵" if target.tmid else "")]
+    if pending.quoted:
+        lines.append(f"<b>Replying to:</b> <i>{escape(pending.quoted)}</i>")
+    text = pending.text.strip()
+    if len(text) > PREVIEW_TEXT_LIMIT:
+        hidden = len(text) - PREVIEW_TEXT_LIMIT
+        text = f"{text[:PREVIEW_TEXT_LIMIT]}… (+{hidden} more characters, sent in full)"
+    lines += [RULE, escape(text)]
+    return "\n".join(lines)
+
+
+def preview_markup(pending: PendingSend) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("✅ Send", callback_data=f"send:{pending.id}"),
+            InlineKeyboardButton("✖️ Cancel", callback_data=f"cancel:{pending.id}"),
+        ]]
+    )
+
+
 def owner_filter(owner_id: int) -> filters.BaseFilter:
     return filters.User(user_id=owner_id) & filters.ChatType.PRIVATE
 
@@ -149,13 +186,52 @@ def build_handlers(bridge: Bridge, owner_id: int) -> list:
             return
         await answer(update, await bridge.set_active(" ".join(context.args)))
 
+    async def send_or_confirm(update: Update, target, text: str, quoted: str | None = None) -> None:
+        """Send right away, or show a preview with Send / Cancel buttons."""
+        message = update.effective_message
+        if isinstance(target, str):  # could not resolve the destination
+            await message.reply_text(target, disable_notification=True)
+            return
+        if not text.strip():
+            await message.reply_text("Nothing to send.", disable_notification=True)
+            return
+        if not bridge.config.confirm_before_send:
+            result = await bridge.deliver(target, text)
+            await message.reply_text(result, disable_notification=True)
+            return
+        pending = bridge.hold(target, text, _quote(quoted))
+        await message.reply_text(
+            "📤 <b>Send this message?</b>\n" + describe_pending(pending),
+            parse_mode=ParseMode.HTML,
+            reply_markup=preview_markup(pending),
+            disable_web_page_preview=True,
+            disable_notification=True,
+        )
+
     async def send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text = update.effective_message.text or ""
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
             await answer(update, "Usage: /send @username your message")
             return
-        await answer(update, await bridge.send_to(parts[1], parts[2]))
+        await send_or_confirm(update, await bridge.resolve_named(parts[1]), parts[2])
+
+    async def on_confirm_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if query.from_user is None or query.from_user.id != owner_id:
+            log.warning("ignored button press from non-owner user id %s", getattr(query.from_user, "id", "?"))
+            await query.answer()
+            return
+        action, _, pending_id = (query.data or "").partition(":")
+        if action == "send":
+            await query.answer("Sending…")
+            result, pending = await bridge.confirm(pending_id)
+        else:
+            pending = bridge.cancel(pending_id)
+            await query.answer("Cancelled")
+            result = "✖️ Cancelled, nothing was sent." if pending else "Already handled."
+        body = f"{escape(result)}\n{describe_pending(pending)}" if pending else escape(result)
+        await query.edit_message_text(body, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
     async def on_room_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
@@ -170,11 +246,14 @@ def build_handlers(bridge: Bridge, owner_id: int) -> list:
 
     async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
-        if message.reply_to_message is not None:
-            result = await bridge.reply(message.reply_to_message.message_id, message.text)
+        original = message.reply_to_message
+        if original is not None:
+            target = bridge.resolve_reply(original.message_id)
+            quoted = original.text or original.caption
         else:
-            result = await bridge.send_text(message.text)
-        await message.reply_text(result, disable_notification=True)
+            target = bridge.resolve_active()
+            quoted = None
+        await send_or_confirm(update, target, message.text, quoted)
 
     async def on_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await answer(update, "Only text messages can be sent to Rocket.Chat for now.")
@@ -196,6 +275,7 @@ def build_handlers(bridge: Bridge, owner_id: int) -> list:
         CommandHandler("to", to_cmd, filters=owner),
         CommandHandler("send", send_cmd, filters=owner),
         CallbackQueryHandler(on_room_button, pattern=r"^room:"),
+        CallbackQueryHandler(on_confirm_button, pattern=r"^(send|cancel):"),
         MessageHandler(owner & filters.TEXT & ~filters.COMMAND, on_text),
         MessageHandler(owner & filters.COMMAND, on_unknown_command),
         MessageHandler(owner & ~filters.TEXT, on_other),

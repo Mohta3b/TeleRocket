@@ -127,3 +127,16 @@ def test_proxy_credentials_are_secret(env):
     assert "pr0xyPass" in cfg.secrets and "alice" in cfg.secrets
     assert "pr0xyPass" not in repr(cfg) and "alice" not in repr(cfg)
     assert "socks5://proxy.local:1080" in repr(cfg)
+
+
+@pytest.mark.parametrize("value, expected", [("", False), ("true", True), ("ON", True),
+                                             ("1", True), ("false", False), ("no", False)])
+def test_confirm_before_send(env, value, expected):
+    env["CONFIRM_BEFORE_SEND"] = value
+    assert build_config(env).confirm_before_send is expected
+
+
+def test_confirm_before_send_typo_rejected(env):
+    env["CONFIRM_BEFORE_SEND"] = "ture"
+    with pytest.raises(ConfigError, match="CONFIRM_BEFORE_SEND"):
+        build_config(env)

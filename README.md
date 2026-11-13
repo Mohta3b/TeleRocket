@@ -126,6 +126,15 @@ In `.env`:
   that mention you, `@all` or `@here`.
 - `FORWARD_SCOPE=all`: every message from every room you are in (can be a lot).
 - `IGNORE_ROOMS=general,random`: rooms that are never forwarded.
+- `CONFIRM_BEFORE_SEND=true`: before anything is sent to Rocket.Chat, the bot
+  shows a preview with the recipient, the message you're replying to (if any)
+  and your text, with **✅ Send** and **✖️ Cancel** buttons. Nothing is sent
+  until you tap Send; tapping twice still sends once. Unanswered previews
+  expire after 30 minutes or when the bridge restarts. `false` (default)
+  sends right away.
+
+Restart the bridge after changing `.env` (`scripts/service.sh restart`, or
+`docker compose up -d` for the container).
 
 ## 5. Check the setup
 
@@ -174,9 +183,12 @@ Ask a colleague to help (or use a second Rocket.Chat account), with the bridge r
    `/send @colleague hello`.
 6. **Owner lock:** from another Telegram account, message your bot. It does not
    answer, and the terminal logs only `ignored update from non-owner user id …`.
-7. **Status:** `/status` shows the connection, forwarding mode and active chat.
+7. **Confirmation (if `CONFIRM_BEFORE_SEND=true`):** send or reply to
+   something. A preview appears instead of sending; tap **✖️ Cancel** and check
+   nothing arrived in Rocket.Chat, then try again and tap **✅ Send**.
+8. **Status:** `/status` shows the connection, forwarding mode and active chat.
    `/pause` and `/resume` turn forwarding off and on.
-8. **Reconnect:** turn Wi-Fi off for a couple of minutes. You get a "Lost
+9. **Reconnect:** turn Wi-Fi off for a couple of minutes. You get a "Lost
    connection" notice after about 90 seconds offline, and "Reconnected" when it
    is back. Messages sent while the bridge was offline are not forwarded later.
 

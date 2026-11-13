@@ -32,6 +32,7 @@ class Config:
     data_dir: Path = Path("data")
     log_level: str = "INFO"
     telegram_proxy_url: str | None = None
+    confirm_before_send: bool = False
 
     @property
     def secrets(self) -> list[str]:
@@ -57,7 +58,8 @@ class Config:
             f"forward_scope={self.forward_scope!r}, "
             f"ignore_rooms={sorted(self.ignore_rooms)!r}, "
             f"data_dir={str(self.data_dir)!r}, log_level={self.log_level!r}, "
-            f"telegram_proxy_url={describe_proxy(self.telegram_proxy_url)!r})"
+            f"telegram_proxy_url={describe_proxy(self.telegram_proxy_url)!r}, "
+            f"confirm_before_send={self.confirm_before_send})"
         )
 
     __str__ = __repr__
@@ -129,6 +131,17 @@ def _bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _strict_bool(env: dict[str, str], key: str, *, default: bool) -> bool:
+    raw = env.get(key, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{key} must be true or false")
+
+
 def build_config(env: dict[str, str]) -> Config:
     """Validate raw settings and build a Config."""
     url = _require(env, "ROCKETCHAT_URL").rstrip("/")
@@ -174,6 +187,7 @@ def build_config(env: dict[str, str]) -> Config:
         data_dir=Path(env.get("DATA_DIR", "data").strip() or "data").expanduser(),
         log_level=(env.get("LOG_LEVEL", "INFO").strip() or "INFO").upper(),
         telegram_proxy_url=parse_proxy_url(env.get("TELEGRAM_PROXY_URL")),
+        confirm_before_send=_strict_bool(env, "CONFIRM_BEFORE_SEND", default=False),
     )
 
 
@@ -208,4 +222,5 @@ _KNOWN_KEYS = {
     "LOG_LEVEL",
     "ALLOW_INSECURE_HTTP",
     "TELEGRAM_PROXY_URL",
+    "CONFIRM_BEFORE_SEND",
 }

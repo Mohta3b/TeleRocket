@@ -172,3 +172,50 @@ async def test_auth_failure_notified_immediately(parts):
     bridge, out, _, _ = parts
     await bridge.on_rocket_state(False, "Rocket.Chat login failed: logged out")
     assert "rejected the token" in out.sent[-1][1]
+
+
+async def test_hold_confirm_sends_once_and_sets_active(parts):
+    bridge, out, rest, store = parts
+    await bridge.on_rocket_message(*dm(tmid="t9"))
+    target = bridge.resolve_reply(out.sent[0][0])
+    pending = bridge.hold(target, "ok then", "Sara: hello")
+    assert rest.sent == []  # nothing sent before confirmation
+    result, held = await bridge.confirm(pending.id)
+    assert result == "✅ Sent to @sara (thread)" and held.text == "ok then"
+    assert rest.sent == [("r-dm", "ok then", "t9")]
+    assert store.get("active_rid") == "r-dm"
+    result, held = await bridge.confirm(pending.id)  # double tap
+    assert held is None and "Nothing was sent" in result
+    assert len(rest.sent) == 1
+
+
+async def test_cancel_sends_nothing(parts):
+    bridge, _, rest, _ = parts
+    target = await bridge.resolve_named("#general")
+    pending = bridge.hold(target, "never mind")
+    assert bridge.cancel(pending.id).text == "never mind"
+    assert bridge.cancel(pending.id) is None
+    result, _ = await bridge.confirm(pending.id)
+    assert "Nothing was sent" in result
+    assert rest.sent == []
+
+
+async def test_pending_expires(parts, monkeypatch):
+    import telerocket.bridge as bridge_mod
+
+    bridge, _, rest, _ = parts
+    pending = bridge.hold(bridge_mod.SendTarget("r-gen", None, "#general"), "late")
+    monkeypatch.setattr(bridge_mod, "PENDING_TTL", -1)
+    result, held = await bridge.confirm(pending.id)
+    assert held is None and rest.sent == []
+
+
+async def test_resolve_errors_are_messages(parts):
+    bridge, _, _, _ = parts
+    assert isinstance(bridge.resolve_reply(12345), str)
+    assert isinstance(bridge.resolve_active(), str)
+    assert isinstance(await bridge.resolve_named("#nope"), str)
+
+
+async def test_status_shows_confirmation_setting(parts):
+    assert "Confirm before sending: off" in parts[0].status()
