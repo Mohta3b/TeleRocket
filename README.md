@@ -12,8 +12,6 @@ No public server or open ports needed.
 
 See [PLAN.md](PLAN.md) for the design and the security choices.
 
-> **Before you start:** forwarded messages are stored on Telegram's servers.
-> Make sure your company allows forwarding work chat to Telegram.
 
 ## Requirements
 
